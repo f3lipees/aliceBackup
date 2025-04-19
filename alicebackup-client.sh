@@ -96,8 +96,20 @@ Options:
 DIE()
 {
     msg="$1"
+    log "ERROR" "$msg" # Log the error
     printf -- "$msg\n"
     exit 1
+}
+
+# Logging function
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    echo "[$timestamp] [$level] $message" >> "$logFile"
+    if [ "$level" = "ERROR" ]; then
+      printf "[$timestamp] [$level] $message\n" >&2
+    fi
 }
 
 # Create a Full Backup
@@ -105,6 +117,8 @@ FULL_BACKUP()
 {
     sourceDirectory="$1"
     exclude="$2"
+    log "INFO" "Starting FULL backup of $sourceDirectory"
+    start_time=$(date +%s)
     printf "#==========================================================#\n"
     printf "| BACKUP FULL\n"
     printf "#==========================================================#\n"
@@ -114,6 +128,10 @@ FULL_BACKUP()
     --file=${backupLocalDir}/backup-full-$machineName-$date.tar.gz \
     --listed-incremental=${backupLocalDir}/backup-full-$machineName.snar \
     $sourceDirectory
+
+    end_time=$(date +%s)
+    duration=$((end_time - start_time))
+    log "INFO" "FULL backup completed in $duration seconds."
 }
 
 # Create differential Backup.
@@ -121,6 +139,8 @@ DIFFERENTIAL_BACKUP()
 {
     sourceDirectory="$1"
     exclude="$2"
+    log "INFO" "Starting DIFFERENTIAL backup of $sourceDirectory"
+    start_time=$(date +%s)
     printf "\n#==========================================================#\n"
     printf "| BACKUP DIFFERENTIAL\n"
     printf "#==========================================================#\n"
@@ -135,6 +155,9 @@ DIFFERENTIAL_BACKUP()
     --file=${backupLocalDir}/backup-diff-$machineName-$date.tar.gz \
     --listed-incremental=${backupLocalDir}/backup-diff-$machineName-${count}.snar     \
     $sourceDirectory
+    end_time=$(date +%s)
+    duration=$((end_time - start_time))
+    log "INFO" "DIFFERENTIAL backup completed in $duration seconds."
 }
 
 # After making backuyp, send it with rsync to storage in server or
@@ -143,30 +166,36 @@ RSYNC_SEND()
 {
     sendServer="$1"
     remoteDirectory="$2"
+    log "INFO" "Starting RSYNC send to $sendServer:$remoteDirectory"
     printf "\n#==========================================================#\n"
     printf "| RSYNC Send to: $host\n"
     printf "#==========================================================#\n"
     cd ${backupLocalDir}
     if [ -n "$ID_RSA" ] && [ -n "$SSH_PORT" ]; then
-        rsync $RSYNC_CMD --exclude '*.snar' . ${sendServer}:${remoteDirectory} -e "ssh -p $SSH_PORT -i $ID_RSA"
+        rsync $RSYNC_CMD --exclude '*.snar' . ${sendServer}:${remoteDirectory} -e "ssh -p $SSH_PORT -i $ID_RSA" "$logFile"
         if [ "$?" -ne 0 ]; then
+            log "ERROR" "RSYNC failed with exit code $?"
             return 1
         fi
     else
-        rsync $RSYNC_CMD --exclude '*.snar' . ${sendServer}:${remoteDirectory} -e "ssh -p $SSH_PORT"
+        rsync $RSYNC_CMD --exclude '*.snar' . ${sendServer}:${remoteDirectory} -e "ssh -p $SSH_PORT" "$logFile"
         if [ "$?" -ne 0 ]; then
+            log "ERROR" "RSYNC failed with exit code $?"
             return 1
         fi
     fi
+    log "INFO" "RSYNC send completed successfully."
 }
 
 # Remove local backups for store only on the server.
 REMOVE_LOCAL_BACKUPS()
 {
+    log "INFO" "Removing local backups."
     cd ${backupLocalDir}
     printf "\n=======> Remove Local Backup <=======\n"
     rm -v backup-diff-*.tar.gz 2>/dev/null
     rm -v backup-full-*.tar.gz 2>/dev/null
+    log "INFO" "Local backups removed."
 }
 
 # Rotate. Every 7 days delete files with *.snar metada and
@@ -174,11 +203,13 @@ REMOVE_LOCAL_BACKUPS()
 ROTATE_DAY()
 {
     if [ "$dayOfTheWeek" -eq 7 ]; then
+        log "INFO" "Starting rotation - removing .snar files."
         printf "\n#==========================================================#\n"
         printf "| Rotate Day!\n"
         printf "\n#==========================================================#\n"
         cd "$backupLocalDir"
         rm -v *.snar 2>/dev/nul
+        log "INFO" ".snar files removed."
     else
         return 0
     fi
@@ -196,11 +227,13 @@ PRESS_ESCAPE()
 # Delete old backup remote server...
 DELETE_OLD_BACKUP_REMOTE_SERVER()
 {
+    log "INFO" "Deleting backups older than $deleteOlderBackups days on remote server."
     printf "\n#==========================================================#\n"
     printf "# DELETE BACKUPS MORE THAN: ${deleteOlderBackups} Days"
     printf "\n#==========================================================#\n"
     ssh -p "$SSH_PORT" "${userAndHost}" -i "$ID_RSA" \
     "find \"$backupRemoteDir\" -type f -mtime +\"$deleteOlderBackups\" -exec rm -v {} +"
+    log "INFO" "Deletion of old backups completed."
 }
 
 CONFIGURE_ME()
@@ -298,6 +331,12 @@ EOF
 #----------------------------------------------------------------------------#
 # MAIN
 #----------------------------------------------------------------------------#
+
+# Define the log file
+logFile="${backupLocalDir}/alicebackup-$machineName-$date.log"
+
+# Log script start
+log "INFO" "AliceBackup started"
 
 # Loop options and args
 if [ "$#" -eq 0 ];then
@@ -428,3 +467,6 @@ REMOVE_LOCAL_BACKUPS
 if [ -n "$deleteOlderBackups" ]; then
     DELETE_OLD_BACKUP_REMOTE_SERVER
 fi
+
+# Log script end
+log "INFO" "AliceBackup finished"
